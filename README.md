@@ -12,5 +12,6 @@ muni.md/
 │   ├── pipeline.py       # orchestrates crawl → export → save
 │   └── models.py         # Document dataclass (url, title, date, source)
 ├── output/               # gitignored, where markdown lands
+├── tests/                # scripts for testing packages
 ├── pyproject.toml
 └── README.md
