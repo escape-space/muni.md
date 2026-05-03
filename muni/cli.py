@@ -12,8 +12,8 @@ from rich.console import Console
 from rich.table import Table
 from rich import print as rprint
 
-from muni.crawler import crawl
-from muni.exporters.gdocs import export_all
+from muni.pipeline import run
+from muni.crawler import DiscoveredLink, LinkType
 
 app = typer.Typer(
     name="muni",
@@ -38,10 +38,6 @@ def crawl_cmd(
         "--all", "-a",
         help="Also collect PDFs and HTML page links",
     )] = False,
-    export: Annotated[bool, typer.Option(
-        "--export", "-e",
-        help="Export discovered Google Docs to markdown immediately",
-    )] = True,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run",
         help="Crawl and list links without exporting anything",
@@ -50,6 +46,10 @@ def crawl_cmd(
         "--rate-limit",
         help="Seconds between requests",
     )] = 1.0,
+    no_manifest: Annotated[bool, typer.Option(
+        "--no-manifest",
+        help="Skip writing manifest.json",
+    )] = False,
 ):
     """
     Crawl a URL, find Google Docs, and export them to markdown.
@@ -57,19 +57,26 @@ def crawl_cmd(
     console.rule("[bold blue]muni.md[/bold blue]")
     console.print(f"[dim]Crawling:[/dim] {url}\n")
 
-    # --- Crawl ---
-    with console.status("Crawling page..."):
-        result = crawl(url, collect_all=all_content, rate_limit=0)  # no delay on crawl itself
+    with console.status("Running pipeline..."):
+        result = run(
+            seed_url=url,
+            output_dir=output,
+            collect_all=all_content,
+            rate_limit=rate_limit,
+            dry_run=dry_run,
+            write_manifest=not no_manifest,
+        )
 
-    if result.errors:
-        for err in result.errors:
+    # --- Crawl errors ---
+    if result.crawl.errors:
+        for err in result.crawl.errors:
             rprint(f"[red]✗[/red] {err}")
         raise typer.Exit(1)
 
-    # --- Report discovered links ---
-    _print_discovered(result, all_content)
+    # --- Discovered links table ---
+    _print_discovered(result.crawl, all_content)
 
-    if not result.gdocs:
+    if not result.crawl.gdocs:
         console.print("\n[yellow]No Google Docs found. Nothing to export.[/yellow]")
         raise typer.Exit(0)
 
@@ -77,16 +84,22 @@ def crawl_cmd(
         console.print("\n[dim]Dry run — skipping export.[/dim]")
         raise typer.Exit(0)
 
-    if not export:
-        raise typer.Exit(0)
+    # --- Export results ---
+    console.print(f"\n[dim]Exported to[/dim] {output}/\n")
+    _print_export_results(result.exports)
 
-    # --- Export ---
-    console.print(f"\n[dim]Exporting {len(result.gdocs)} doc(s) to[/dim] {output}/\n")
+    # --- Summary ---
+    summary = result.summary()
+    console.print(
+        f"\n[dim]Started:[/dim] {summary['started_at']}\n"
+        f"[dim]Finished:[/dim] {summary['finished_at']}"
+    )
 
-    with console.status("Exporting..."):
-        export_results = export_all(result.gdocs, output_dir=output, rate_limit=rate_limit)
+    if not no_manifest:
+        console.print(f"[dim]Manifest:[/dim] {output}/manifest.json")
 
-    _print_export_results(export_results)
+    if result.failed:
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +121,6 @@ def export_cmd(
     """
     Export a single Google Doc URL to markdown.
     """
-    from muni.crawler import DiscoveredLink, LinkType
     from muni.exporters.gdocs import export_doc
 
     link = DiscoveredLink(
